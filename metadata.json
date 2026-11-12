@@ -1,0 +1,6 @@
+{
+  "name": "Eco-Sovereign Climate & Environmental Telemetry Platform",
+  "description": "منظومة السيادة البيئية والرصد المناخي — GIS environmental telemetry, wildfire early warning (FWI), hydrological stress modeling, and encrypted field reporting platform.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
