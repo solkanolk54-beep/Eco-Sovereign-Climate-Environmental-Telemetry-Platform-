@@ -99,14 +99,88 @@ export function appendStationHistoryPoint(
   return combined;
 }
 
+export interface SparklineCoord {
+  x: number;
+  y: number;
+  value: number;
+}
+
 export interface SparklineGeometry {
   linePath: string;
   areaPath: string;
-  points: Array<{ x: number; y: number; value: number }>;
+  points: SparklineCoord[];
   min: number;
   max: number;
   current: number;
   delta: number;
+}
+
+/**
+ * Builds SVG line and area path strings from precomputed sparkline coordinates.
+ */
+export function buildSparklinePaths(
+  coords: SparklineCoord[],
+  height: number = 56,
+  padding: number = 4
+): { linePath: string; areaPath: string } {
+  if (coords.length === 0) {
+    return { linePath: '', areaPath: '' };
+  }
+
+  const linePath = coords
+    .map((pt, idx) => `${idx === 0 ? 'M' : 'L'}${Number(pt.x.toFixed(2))},${Number(pt.y.toFixed(2))}`)
+    .join(' ');
+
+  const bottomY = Number((height - padding).toFixed(2));
+  const areaPath = `${linePath} L${Number(coords[coords.length - 1].x.toFixed(2))},${bottomY} L${Number(coords[0].x.toFixed(2))},${bottomY} Z`;
+
+  return { linePath, areaPath };
+}
+
+/**
+ * Cubic ease-out curve clamped to [0, 1].
+ */
+export function easeOutCubic(t: number): number {
+  const clamped = Math.max(0, Math.min(1, t));
+  return 1 - Math.pow(1 - clamped, 3);
+}
+
+/**
+ * Smoothly interpolates between two sparkline coordinate arrays (resampling if lengths differ).
+ */
+export function interpolateSparklineCoords(
+  from: SparklineCoord[],
+  to: SparklineCoord[],
+  t: number
+): SparklineCoord[] {
+  if (to.length === 0) return [];
+  const clampedT = Math.max(0, Math.min(1, t));
+  if (clampedT >= 1 || from.length === 0) {
+    return to;
+  }
+
+  const maxFromIdx = Math.max(0, from.length - 1);
+  const maxToIdx = Math.max(1, to.length - 1);
+
+  return to.map((target, idx) => {
+    const mappedIdx =
+      from.length === to.length ? idx : (idx / maxToIdx) * maxFromIdx;
+    const lowIdx = Math.floor(mappedIdx);
+    const highIdx = Math.min(maxFromIdx, Math.ceil(mappedIdx));
+    const frac = mappedIdx - lowIdx;
+
+    const a = from[lowIdx];
+    const b = from[highIdx];
+    const startX = a.x + (b.x - a.x) * frac;
+    const startY = a.y + (b.y - a.y) * frac;
+    const startVal = a.value + (b.value - a.value) * frac;
+
+    return {
+      x: Number((startX + (target.x - startX) * clampedT).toFixed(2)),
+      y: Number((startY + (target.y - startY) * clampedT).toFixed(2)),
+      value: Number((startVal + (target.value - startVal) * clampedT).toFixed(2)),
+    };
+  });
 }
 
 /**
@@ -140,7 +214,7 @@ export function buildSparklineGeometry(
   const innerW = Math.max(1, width - padding * 2);
   const innerH = Math.max(1, height - padding * 2);
 
-  const coords = values.map((val, idx) => {
+  const coords: SparklineCoord[] = values.map((val, idx) => {
     const x =
       values.length === 1
         ? padding + innerW / 2
@@ -154,15 +228,7 @@ export function buildSparklineGeometry(
     };
   });
 
-  const linePath = coords
-    .map((pt, idx) => `${idx === 0 ? 'M' : 'L'}${pt.x},${pt.y}`)
-    .join(' ');
-
-  const bottomY = Number((height - padding).toFixed(2));
-  const areaPath =
-    coords.length > 0
-      ? `${linePath} L${coords[coords.length - 1].x},${bottomY} L${coords[0].x},${bottomY} Z`
-      : '';
+  const { linePath, areaPath } = buildSparklinePaths(coords, height, padding);
 
   return {
     linePath,

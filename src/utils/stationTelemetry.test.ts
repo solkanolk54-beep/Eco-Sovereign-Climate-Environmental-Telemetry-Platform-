@@ -5,8 +5,11 @@ import {
   HISTORY_MAX_POINTS,
   appendStationHistoryPoint,
   buildSparklineGeometry,
+  buildSparklinePaths,
   computeNextStationReading,
+  easeOutCubic,
   generateInitial60MinHistory,
+  interpolateSparklineCoords,
 } from './stationTelemetry';
 
 test('generateInitial60MinHistory seeds 60 one-minute points per station', () => {
@@ -73,4 +76,36 @@ test('buildSparklineGeometry computes normalized path, min/max, and delta', () =
   const flat = buildSparklineGeometry([30, 30, 30], 200, 50, 5);
   assert.equal(flat.delta, 0);
   assert.ok(!flat.linePath.includes('NaN'));
+});
+
+test('easeOutCubic and interpolateSparklineCoords morph coordinates smoothly', () => {
+  assert.equal(easeOutCubic(-0.5), 0);
+  assert.equal(easeOutCubic(0), 0);
+  assert.equal(easeOutCubic(1), 1);
+  assert.equal(easeOutCubic(1.5), 1);
+  assert.ok(easeOutCubic(0.5) > 0.5 && easeOutCubic(0.5) < 1);
+
+  const from = [
+    { x: 5, y: 30, value: 20 },
+    { x: 105, y: 30, value: 20 },
+  ];
+  const to = [
+    { x: 5, y: 10, value: 30 },
+    { x: 55, y: 20, value: 25 },
+    { x: 105, y: 40, value: 15 },
+  ];
+
+  const mid = interpolateSparklineCoords(from, to, 0.5);
+  assert.equal(mid.length, 3);
+  assert.equal(mid[0].y, 20);
+  assert.equal(mid[1].y, 25);
+  assert.equal(mid[2].y, 35);
+
+  const done = interpolateSparklineCoords(from, to, 1);
+  assert.deepEqual(done, to);
+
+  const paths = buildSparklinePaths(mid, 50, 5);
+  assert.ok(paths.linePath.startsWith('M5,20'));
+  assert.ok(paths.areaPath.endsWith('Z'));
+  assert.ok(!paths.linePath.includes('NaN'));
 });

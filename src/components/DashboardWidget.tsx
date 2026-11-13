@@ -1,4 +1,4 @@
-import React, { useId, useMemo, useState } from 'react';
+import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Activity } from 'lucide-react';
 import type {
   Language,
@@ -7,7 +7,13 @@ import type {
   TelemetryStation,
 } from '../types/telemetry';
 import type { TranslationBundle } from '../i18n/translations';
-import { buildSparklineGeometry } from '../utils/stationTelemetry';
+import {
+  buildSparklineGeometry,
+  buildSparklinePaths,
+  easeOutCubic,
+  interpolateSparklineCoords,
+  type SparklineCoord,
+} from '../utils/stationTelemetry';
 
 export type StreamConnectionState = 'live' | 'connecting' | 'paused';
 
@@ -29,6 +35,8 @@ interface SparklineCardProps {
   rangeLabel: string;
 }
 
+const SPARKLINE_MORPH_MS = 550;
+
 const SparklinePlot: React.FC<SparklineCardProps> = ({
   title,
   unit,
@@ -40,18 +48,105 @@ const SparklinePlot: React.FC<SparklineCardProps> = ({
 }) => {
   const gradientId = useId();
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
+  const [pulseTick, setPulseTick] = useState(0);
+  const [isAnimating, setIsAnimating] = useState(false);
 
   const values = useMemo(() => points.map(valueSelector), [points, valueSelector]);
   const width = 260;
   const height = 60;
-  const geo = useMemo(() => buildSparklineGeometry(values, width, height, 5), [values]);
+  const padding = 5;
+  const geo = useMemo(
+    () => buildSparklineGeometry(values, width, height, padding),
+    [values]
+  );
+
+  // Start from horizontal centerline on first mount for a smooth entrance morph
+  const [displayCoords, setDisplayCoords] = useState<SparklineCoord[]>(() =>
+    geo.points.map((pt) => ({ ...pt, y: height / 2 }))
+  );
+  const renderedCoordsRef = useRef<SparklineCoord[]>(displayCoords);
+  const lastTimestampRef = useRef<string | null>(null);
+
+  const latestTimestamp = points[points.length - 1]?.timestamp ?? '';
+
+  // Trigger incoming telemetry ping ring whenever a newer timestamp arrives
+  useEffect(() => {
+    if (!latestTimestamp) return;
+    if (lastTimestampRef.current !== null && lastTimestampRef.current !== latestTimestamp) {
+      setPulseTick((prev) => prev + 1);
+    }
+    lastTimestampRef.current = latestTimestamp;
+  }, [latestTimestamp]);
+
+  // Smoothly morph sparkline coordinates via requestAnimationFrame when target geometry updates
+  useEffect(() => {
+    const target = geo.points;
+    if (target.length === 0) {
+      renderedCoordsRef.current = [];
+      setDisplayCoords([]);
+      setIsAnimating(false);
+      return;
+    }
+
+    const prefersReducedMotion =
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    if (prefersReducedMotion) {
+      renderedCoordsRef.current = target;
+      setDisplayCoords(target);
+      setIsAnimating(false);
+      return;
+    }
+
+    const startCoords =
+      renderedCoordsRef.current.length > 0
+        ? renderedCoordsRef.current
+        : target.map((pt) => ({ ...pt, y: height / 2 }));
+
+    let rafId = 0;
+    let startTime: number | null = null;
+    setIsAnimating(true);
+
+    const step = (now: number) => {
+      if (startTime === null) startTime = now;
+      const elapsed = now - startTime;
+      const rawProgress = Math.min(1, elapsed / SPARKLINE_MORPH_MS);
+      const eased = easeOutCubic(rawProgress);
+      const nextCoords = interpolateSparklineCoords(startCoords, target, eased);
+
+      renderedCoordsRef.current = nextCoords;
+      setDisplayCoords(nextCoords);
+
+      if (rawProgress < 1) {
+        rafId = window.requestAnimationFrame(step);
+      } else {
+        renderedCoordsRef.current = target;
+        setDisplayCoords(target);
+        setIsAnimating(false);
+      }
+    };
+
+    rafId = window.requestAnimationFrame(step);
+
+    return () => {
+      window.cancelAnimationFrame(rafId);
+    };
+  }, [geo.points]);
+
+  const activeCoords = displayCoords.length > 0 ? displayCoords : geo.points;
+  const displayPaths = useMemo(
+    () => buildSparklinePaths(activeCoords, height, padding),
+    [activeCoords]
+  );
 
   const activeIdx =
     hoveredIdx !== null && hoveredIdx >= 0 && hoveredIdx < points.length
       ? hoveredIdx
       : points.length - 1;
   const activePoint = points[activeIdx];
-  const activeCoord = geo.points[activeIdx];
+  const activeCoord = activeCoords[activeIdx];
   const activeVal = activePoint ? valueSelector(activePoint) : geo.current;
 
   const formattedTime = activePoint
@@ -67,19 +162,29 @@ const SparklinePlot: React.FC<SparklineCardProps> = ({
       <div className="flex items-baseline justify-between gap-2">
         <span className="text-xs text-slate-400">{title}</span>
         <div className="flex items-baseline gap-1.5">
-          <span className="text-lg font-bold font-mono tabular-nums text-slate-100">
+          <span
+            className={`text-lg font-bold font-mono tabular-nums transition-colors duration-500 ${
+              isAnimating ? 'text-white' : 'text-slate-100'
+            }`}
+          >
             {activeVal.toFixed(decimals)}
           </span>
           <span className="text-[11px] font-mono text-slate-400">{unit}</span>
         </div>
       </div>
 
-      <div className="relative bg-[#070b12] border border-slate-800/80 rounded-md p-1.5">
+      <div
+        className={`relative bg-[#070b12] border rounded-md p-1.5 transition-colors duration-500 ${
+          isAnimating ? 'border-slate-700' : 'border-slate-800/80'
+        }`}
+      >
         <svg
           viewBox={`0 0 ${width} ${height}`}
           className="w-full h-[60px] overflow-visible"
           role="img"
           aria-label={`${title}: ${activeVal.toFixed(decimals)} ${unit}`}
+          data-animating={isAnimating ? 'true' : 'false'}
+          data-pulse-count={pulseTick}
           onMouseLeave={() => setHoveredIdx(null)}
         >
           <defs>
@@ -89,10 +194,12 @@ const SparklinePlot: React.FC<SparklineCardProps> = ({
             </linearGradient>
           </defs>
 
-          {geo.areaPath && <path d={geo.areaPath} fill={`url(#${gradientId})`} />}
-          {geo.linePath && (
+          {displayPaths.areaPath && (
+            <path d={displayPaths.areaPath} fill={`url(#${gradientId})`} />
+          )}
+          {displayPaths.linePath && (
             <path
-              d={geo.linePath}
+              d={displayPaths.linePath}
               fill="none"
               stroke={strokeColor}
               strokeWidth={2}
@@ -112,6 +219,18 @@ const SparklinePlot: React.FC<SparklineCardProps> = ({
                 strokeWidth={1}
                 strokeDasharray="2 2"
               />
+              {pulseTick > 0 && hoveredIdx === null && (
+                <circle
+                  key={`ping-${pulseTick}`}
+                  cx={activeCoord.x}
+                  cy={activeCoord.y}
+                  r={3.5}
+                  fill="none"
+                  stroke={strokeColor}
+                  strokeWidth={1.5}
+                  className="animate-sparkline-ping pointer-events-none"
+                />
+              )}
               <circle
                 cx={activeCoord.x}
                 cy={activeCoord.y}
